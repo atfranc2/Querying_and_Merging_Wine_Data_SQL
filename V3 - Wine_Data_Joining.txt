@@ -1,0 +1,287 @@
+
+/* Insert wines that were not in the original dataset and their corresponding color*/
+insert into wine.grape_varieties
+    values ('G-S-M', 'red'),
+           ('Tinta de Toro', 'red'),
+           ('Friulano', 'white'),
+           ('Mencía', 'red'),
+           ('Palomino', 'white'),
+           ('Viura', 'white'),
+           ('Semillon', 'white'),
+           ('Cabernet', 'red'),
+           ('Alvarinho', 'white'),
+           ('Carmenère', 'red'),
+           ('Garnacha', 'red'),
+           ('Shiraz', 'red'),
+           ('Cariñena', 'red'),
+           ('Ugni Blanc', 'white'),
+           ('Baga', 'red'),
+           ('Monastrell', 'red'),
+           ('Viura', 'white'),
+           ('Petite Sirah', 'red'),
+           ('Mencía', 'red'), 
+           ('Bonarda', 'red'),
+           ('Moscatel', 'white'),
+           ('Traminer', 'white'),
+           ('Pinot', 'white'),
+           ('Sauvignon', 'white'),
+           ('Petite Verdot', 'red'),
+           ('Moscato', 'white'),
+           ('Malvasia Bianca', 'white');
+
+/* Create a temporary table that only contains unique values of grapes. 
+    This will be used to update the grape_varieties table */
+
+create table wine.temp_table as
+    select distinct trim(grape) as grape, color from wine.grape_varieties; 
+
+/* Drop the table so it can be updated */
+DROP TABLE wine.grape_varieties;
+
+/* Create a new empty table */
+CREATE TABLE wine.grape_varieties (
+    Grape,
+    Color
+);
+
+/* Insert wines into the empty table */
+INSERT INTO wine.grape_varieties (
+                                Grape,
+                                Color
+                            )
+                            SELECT Grape,
+                                   Color
+                              FROM wine.temp_table;
+
+/* Drop the temporary table */
+DROP TABLE wine.temp_table; 
+
+select * from wine.grape_varieties;
+
+
+
+/* Clear Joined data so that it can be updates with new wine values */
+DROP TABLE wine.joined_data;
+
+/* Create table by linking wine varieties (grapes) with their repective  
+    color categories*/
+create table wine.joined_data as 
+    select * 
+        from 
+        wine.wine_reviews as wr
+        left join
+        wine.grape_varieties as gv
+        on lower(wr.variety) = lower(gv.Grape);
+
+
+select variety, grape1, grape2, gv.grape, color_scrub
+    from
+    (
+select variety, grape1, grape2, color_scrub
+    from 
+    (
+
+select variety, grape, color, substr(variety, 1, instr(variety,'-')-1 ) as grape1, 
+        substr(variety, instr(variety,'-')+1,  length(variety)) as grape2,
+        case 
+            when lower(variety) like '%white blend%' then 'white'
+            when lower(variety) like '%red blend%' then 'red'
+            when lower(variety) like '%rosé%' then 'red-white'
+            when lower(variety) like '%red%' then 'red'
+            when lower(variety) like '%meritage%' then 'red-white'
+            when lower(variety) like '%petite sirah%' then 'red'
+            when lower(variety) like '%mencía%' then 'red'
+            when lower(variety) like '%palomino%' then 'white'
+            when lower(variety) like '%moscato%' or '%muscat%' then 'white'
+            when lower(variety) like '%tempranillo blend%' then 'red'
+            when lower(variety) like '%xarel%' then 'white'
+            else color 
+        end as color_scrub
+        
+    from wine.joined_data
+    )
+    
+    where grape1 != "" and 
+    grape2 != "" and 
+    color_scrub is null 
+    
+    ) as color1_tab 
+    left join
+    grape_varieties as gv
+    on lower(color1_tab.grape1) = lower(gv.grape); 
+    
+
+
+/* Clear a temporary table grape combo */
+DROP TABLE wine.grape_combo; 
+
+/* Grape combo will take specially delimited wine blends and break them down into 
+    their constituent grapes. 
+    For example merlot-pinot noir will be assiged to:
+        grape1 = merlot
+        grape2 = pinot noir
+    These combination contain up to 3 grapes so three grape columns are created.
+    This will also return the indices of the grape delimiters '-'*/
+create table wine.grape_combo as
+
+select variety,
+    /* substr() finds "-" and etracts the grapes based on their location
+        The index column come from a subquery */
+    substr(variety, 1, index1-1 ) as grape1,         
+    substr(variety, index1+1,  length(variety)-index2) as grape2,
+    case 
+        when combos = 1 then NULL
+        else substr(variety, index2+1,  length(variety)) 
+    end as grape3
+from 
+(
+/* First subquery which creates index columns used to extract grape names in combinations */
+select variety, 
+        /* combos gives the number of occurences of '-' */
+        length(variety) - length(replace(variety, '-','')) as combos,
+        instr(variety,'-') as index1,
+        instr(substr(variety, instr(variety,'-')+1,  length(variety)),'-') + instr(variety,'-') as index2,
+        
+        case 
+            when lower(variety) like '%white blend%' then 'white blend'
+            when lower(variety) like '%red blend%' then 'red blend'
+            when lower(variety) like '%rosé%' then 'rosé'
+            when lower(variety) like '%red%' then 'red'
+            when lower(variety) like '%meritage%' then 'red'
+            when lower(variety) like '%petite sirah%' then 'red'
+            when lower(variety) like '%mencía%' then 'red'
+            when lower(variety) like '%palomino%' then 'white'
+            when lower(variety) like '%moscato%' or '%muscat%' then 'white'
+            when lower(variety) like '%tempranillo blend%' then 'red'
+            when lower(variety) like '%xarel%' then 'white'
+            else color 
+        end as color_scrub
+        
+    from wine.joined_data
+        
+
+
+            )
+    /* Restrict output to only wine varieties that contain '-' which indicates a blend */    
+    where grape1 != "" and
+            grape2 != "" and 
+            color_scrub is null;
+
+
+
+DROP TABLE wine.special_blends; 
+
+/* This step creates a table that takes the grapes and determines what kind of wine blend it is.
+    Does this by obtaing the color of each constituent grape and then assigning a blend type
+    based on the cobination of grape colors */
+create table wine.special_blends as
+
+select variety, grape1, grape2, grape3, 
+    /* Obtains colors from a series of subqueries that join known grapes to grape1, grape2, and grape3
+    and returns the color */
+    color1, color2, color3,
+    
+    /* All_colors will contain the color of each grape contained on a string (i.e. red white red) */
+    trim(lower(color1)||' '||lower(color2)||' '||COALESCE(lower(color3),"")) as all_colors,
+    
+    /* Assigns the blend type to each combinate of colors shown in all_colors */
+    case 
+        when trim(lower(color1)||' '||lower(color2)||' '||COALESCE(lower(color3),"")) like '%red white%' or
+            (trim(lower(color1)||' '||lower(color2)||' '||COALESCE(lower(color3),"")) like '%white red%') then 'red-white blend'
+        when trim(lower(color1)||' '||lower(color2)||' '||COALESCE(lower(color3),"")) like '%red red%' or 
+            trim(lower(color1)||' '||lower(color2)||' '||COALESCE(lower(color3),"")) like '%red red red%' then 'red blend'
+        when trim(lower(color1)||' '||lower(color2)||' '||COALESCE(lower(color3),"")) like '%white white%' or 
+            trim(lower(color1)||' '||lower(color2)||' '||COALESCE(lower(color3),"")) like '%white white white%' then 'white blend'
+    end as wine_class
+
+from (
+    /* 
+    START SUBQUERY1: Subquery that returns the color of grape3 
+        This suquery will contain all the information that is needed and pass it to the main query*/
+    select variety, grape1, grape2, grape3, color1, color2, gv.color as color3
+    
+    from (
+        /* START SUBQUERY2: Subquery that returns the color of grape2
+            Will pass color of grape 1 and grape2 to SUBQUERY1 */
+        select variety, grape1, grape2, grape3, color1, gv.color as color2
+        
+        from (
+
+            /* START SUBQUERY3: Will pass the color of grape1 to SUBQUERY2 */
+
+            select variety, grape1, grape2,grape3, gv.color as color1
+            /* Left join of grape1 with its respective color from grape_varieties */
+            from wine.grape_combo as gb
+            left join 
+            wine.grape_varieties as gv
+            on lower(gb.grape1) = lower(gv.Grape) 
+   
+            /* END SUBQUERY3: Now have color of grape1 */
+            ) as c1
+            
+            /* c1 contains results from SUBQUERY3 */
+            /* Join will join the results of SUBQUERY3 with the results of SUBQUERY2 */
+            left join 
+            wine.grape_varieties as gv
+            on lower(c1.grape2) = lower(gv.grape)
+            /* END SUBQUERY2: Now have color of grape1 and grape2*/
+            ) as c2
+            
+            left join 
+            wine.grape_varieties as gv
+            on lower(c2.grape3) = lower(gv.grape)
+            /* END SUBQUERY1: Now have color of grape1, grape2, and grape3 */
+            )
+            ;
+
+
+DROP TABLE wine.grape_combo; 
+
+DROP TABLE wine.temp_colors;
+
+DROP TABLE wine.temp_class;
+
+create table wine.temp_colors as
+    select *,
+    case       
+        when lower(jd.variety) like '%sparkling%' then 'sparkling'
+        when lower(jd.variety) like '%white blend%' then 'white blend'
+        when lower(jd.variety) like '%red blend%' then 'red blend'
+        when lower(jd.variety) like '%rosé%' then 'rosé'
+        when lower(jd.variety) like '%red%' then 'red'
+        when lower(jd.variety) like '%tempranillo blend%' then 'red'
+        else color 
+    end as simple_blends from wine.joined_data as jd; 
+
+
+
+create table wine.temp_class as 
+    select distinct variety, grape1, grape2, grape3, color1, color2, color3, all_colors, wine_class
+    from wine.special_blends; 
+    
+
+DROP TABLE wine.joined_data;
+
+CREATE TABLE wine.joined_data as 
+
+    select *,
+        case
+            when simple_blends is null then wine_class
+            else simple_blends
+        end as final_colors
+    
+    from wine.temp_colors as jd
+    left outer join
+    wine.temp_class as sb
+    on jd.variety = sb.variety;
+
+select * from wine.joined_data;
+
+DROP TABLE wine.temp_colors;
+DROP TABLE wine.temp_class;
+
+
+
+
+
+
